@@ -122,7 +122,8 @@ jobs:
           for case in "${cases[@]}"; do
             read -r id want_step want_outcome <<<"$case"
             got_step=$(jq -r --arg id "$id" '.[$id].outcome' <<<"$STEPS")
-            got_outcome=$(jq -r --arg id "$id" '.[$id].outputs.outcome // "-"' <<<"$STEPS")
+            # An output the step never set is empty: shown as "-".
+            got_outcome=$(jq -r --arg id "$id" '.[$id].outputs.outcome | if . == null or . == "" then "-" else . end' <<<"$STEPS")
             if [[ $got_step == "$want_step" && $got_outcome == "$want_outcome" ]]; then
               echo "✓ $id: $got_step, $got_outcome"
             else
