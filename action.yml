@@ -1,0 +1,64 @@
+name: Kollaudo gate
+description: Gate a deployment on Kollaudo's verdict, pass, fail or unknown, for a version in an environment.
+author: Kollaudo
+branding:
+  icon: check-circle
+  color: purple
+
+inputs:
+  url:
+    description: The URL of your Kollaudo server.
+    required: true
+  token:
+    description: A read token of your Kollaudo project. Give the gate its own, with a name, so that the log of verdicts says which gate asked.
+    required: true
+  component:
+    description: The component, as your CI sends it with "kollaudo push", such as "api".
+    required: true
+  environment:
+    description: Where the version was tested, usually the environment it comes from, such as "staging".
+    required: true
+  version:
+    description: The version, as your CI sends it with "kollaudo push".
+    default: ${{ github.sha }}
+  require:
+    description: Kinds of test that must have a run, separated by commas, such as "e2e,smoke". They add to your policy, never relax it.
+    default: ""
+  allow:
+    description: >-
+      Outcomes to let through besides pass, separated by commas: "unknown" (evidence is missing), "no-verdict"
+      (Kollaudo didn't answer). Empty by default: the gate fails closed. Use it for development and preview
+      environments only.
+    default: ""
+
+outputs:
+  outcome:
+    description: pass, fail, unknown or no-verdict.
+    value: ${{ steps.gate.outputs.outcome }}
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v7
+      with:
+        node-version: 24
+    # A separate step, so that a failed download isn't mistaken for a failed verdict.
+    - name: Install the Kollaudo CLI
+      shell: bash
+      run: npm install --global --no-audit --no-fund "@kollaudo/cli@$KOLLAUDO_CLI_VERSION"
+      env:
+        # The release of the CLI this release of the action runs (ADR 0020).
+        KOLLAUDO_CLI_VERSION: 0.3.0
+    - name: Ask Kollaudo for the verdict
+      id: gate
+      shell: bash
+      run: '"$GITHUB_ACTION_PATH/gate.sh"'
+      # Inputs go through the environment, never into the script, and the token never on a command line.
+      env:
+        KOLLAUDO_URL: ${{ inputs.url }}
+        KOLLAUDO_TOKEN: ${{ inputs.token }}
+        GATE_COMPONENT: ${{ inputs.component }}
+        GATE_ENVIRONMENT: ${{ inputs.environment }}
+        GATE_VERSION: ${{ inputs.version }}
+        GATE_REQUIRE: ${{ inputs.require }}
+        GATE_ALLOW: ${{ inputs.allow }}

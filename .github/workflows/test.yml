@@ -1,0 +1,133 @@
+name: Test
+
+# Runs the gate against Kollaudo itself (ADR 0020): its image, the release the action pins, next to
+# PostgreSQL. Each case asks for a verdict, and the last step checks what the gate did.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: kollaudo
+          POSTGRES_PASSWORD: kollaudo
+          POSTGRES_DB: kollaudo
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U kollaudo" --health-interval 2s --health-retries 30
+    env:
+      KOLLAUDO_URL: http://localhost:8080
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Start Kollaudo, at the release the action runs
+        run: |
+          version=$(sed -n 's/^ *KOLLAUDO_CLI_VERSION: //p' action.yml)
+          docker run -d --name kollaudo --network host \
+            -e DATABASE_URL=postgres://kollaudo:kollaudo@localhost:5432/kollaudo \
+            "ghcr.io/kollaudo/kollaudo:$version"
+          for _ in $(seq 60); do curl -fsS "$KOLLAUDO_URL/readyz" && break; sleep 1; done
+          tokens=$(docker exec kollaudo kollaudo-server project create action)
+          for scope in ingest read; do
+            token=$(awk -v s="$scope" '$1 == s { print $2 }' <<<"$tokens")
+            echo "::add-mask::$token"
+            echo "${scope^^}_TOKEN=$token" >>"$GITHUB_ENV"
+          done
+          echo "CLI_VERSION=$version" >>"$GITHUB_ENV"
+
+      - name: Send a passed and a failed run of e2e tests in staging
+        run: |
+          report() {
+            printf '{"results":{"tool":{"name":"playwright"},"summary":{"tests":1},"tests":[{"name":"home","status":"%s","duration":10}]}}' "$1"
+          }
+          report passed >passed.json
+          report failed >failed.json
+          for run in "passed 1.0.0" "failed 2.0.0"; do
+            read -r status version <<<"$run"
+            KOLLAUDO_TOKEN=$INGEST_TOKEN npx --yes "@kollaudo/cli@$CLI_VERSION" push "$status.json" \
+              --component api --env staging --version "$version"
+          done
+
+      - name: "pass: goes on"
+        id: pass
+        uses: ./
+        with: { url: "${{ env.KOLLAUDO_URL }}", token: "${{ env.READ_TOKEN }}", component: api, environment: staging, version: 1.0.0 }
+
+      - name: "fail: stops"
+        id: fail
+        continue-on-error: true
+        uses: ./
+        with: { url: "${{ env.KOLLAUDO_URL }}", token: "${{ env.READ_TOKEN }}", component: api, environment: staging, version: 2.0.0 }
+
+      - name: "unknown, as no test ran: stops"
+        id: unknown
+        continue-on-error: true
+        uses: ./
+        with: { url: "${{ env.KOLLAUDO_URL }}", token: "${{ env.READ_TOKEN }}", component: api, environment: staging, version: 3.0.0 }
+
+      - name: "unknown, as a required kind never ran: stops"
+        id: required
+        continue-on-error: true
+        uses: ./
+        with: { url: "${{ env.KOLLAUDO_URL }}", token: "${{ env.READ_TOKEN }}", component: api, environment: staging, version: 1.0.0, require: "e2e,smoke" }
+
+      - name: "unknown with allow: unknown: goes on"
+        id: allowed
+        uses: ./
+        with: { url: "${{ env.KOLLAUDO_URL }}", token: "${{ env.READ_TOKEN }}", component: api, environment: staging, version: 3.0.0, allow: unknown }
+
+      - name: "no answer: stops"
+        id: down
+        continue-on-error: true
+        uses: ./
+        with: { url: "http://localhost:9", token: "${{ env.READ_TOKEN }}", component: api, environment: staging, version: 1.0.0, allow: unknown }
+
+      - name: "no answer with allow: no-verdict: goes on"
+        id: down-allowed
+        uses: ./
+        with: { url: "http://localhost:9", token: "${{ env.READ_TOKEN }}", component: api, environment: staging, version: 1.0.0, allow: no-verdict }
+
+      - name: "a typo in allow: stops"
+        id: typo
+        continue-on-error: true
+        uses: ./
+        with: { url: "${{ env.KOLLAUDO_URL }}", token: "${{ env.READ_TOKEN }}", component: api, environment: staging, version: 3.0.0, allow: unknwon }
+
+      - name: Check what the gate did
+        env:
+          RESULTS: >-
+            pass success pass,
+            fail failure fail,
+            unknown failure unknown,
+            required failure unknown,
+            allowed success unknown,
+            down failure no-verdict,
+            down-allowed success no-verdict,
+            typo failure -
+          STEPS: ${{ toJSON(steps) }}
+        run: |
+          status=0
+          IFS=',' read -ra cases <<<"$RESULTS"
+          for case in "${cases[@]}"; do
+            read -r id want_step want_outcome <<<"$case"
+            got_step=$(jq -r --arg id "$id" '.[$id].outcome' <<<"$STEPS")
+            got_outcome=$(jq -r --arg id "$id" '.[$id].outputs.outcome // "-"' <<<"$STEPS")
+            if [[ $got_step == "$want_step" && $got_outcome == "$want_outcome" ]]; then
+              echo "✓ $id: $got_step, $got_outcome"
+            else
+              echo "✗ $id: $got_step, $got_outcome; expected $want_step, $want_outcome"
+              status=1
+            fi
+          done
+          exit "$status"
