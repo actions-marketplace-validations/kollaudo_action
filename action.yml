@@ -35,6 +35,9 @@ outputs:
   outcome:
     description: pass, fail, unknown or no-verdict.
     value: ${{ steps.gate.outputs.outcome }}
+  message:
+    description: What the verdict says in a sentence, such as "e2e failed.", or why there is no verdict.
+    value: ${{ steps.gate.outputs.message }}
 
 runs:
   using: composite
@@ -48,7 +51,7 @@ runs:
       run: npm install --global --no-audit --no-fund "@kollaudo/cli@$KOLLAUDO_CLI_VERSION"
       env:
         # The release of the CLI this release of the action runs (ADR 0020).
-        KOLLAUDO_CLI_VERSION: 0.3.0
+        KOLLAUDO_CLI_VERSION: 0.4.0
     - name: Ask Kollaudo for the verdict
       id: gate
       shell: bash
