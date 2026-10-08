@@ -1,7 +1,8 @@
 # Kollaudo gate for GitHub Actions
 
 Gate a job on [Kollaudo](https://github.com/kollaudo/kollaudo)'s verdict: before a version moves on,
-one step asks whether it is healthy where it was tested. The job goes on only on `pass`.
+one step asks whether it is healthy where it was tested. The job goes on only on `pass`. A second
+action, [`push`](#send-test-results), sends the test results the gate judges.
 
 ```yaml
 jobs:
@@ -41,6 +42,45 @@ summary of the workflow run.
 
 The output `outcome` is `pass`, `fail`, `unknown` or `no-verdict`.
 
+## Send test results
+
+`kollaudo/action/push` sends CTRF or JUnit XML reports to Kollaudo, for a version of a component.
+Run it even when tests failed, so that the gate sees them:
+
+```yaml
+jobs:
+  e2e-staging:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: npx playwright test
+      - uses: kollaudo/action/push@v0
+        if: ${{ !cancelled() }} # also when tests failed
+        with:
+          url: ${{ vars.KOLLAUDO_URL }}
+          token: ${{ secrets.KOLLAUDO_TOKEN }}
+          path: ctrf/ctrf-report.json
+          component: frontend
+          environment: staging
+```
+
+| Input | | |
+|---|---|---|
+| `url` | required | the URL of your Kollaudo server |
+| `token` | required | an ingest token of your Kollaudo project |
+| `path` | required | report files, one per line. Glob patterns such as `test-results/**/*.xml` are expanded, and all the files make one test run |
+| `component` | required | the component under test |
+| `environment` | | where the tests ran. Leave it empty for build-level tests, such as unit tests |
+| `kind` | `e2e` | the kind of test: `unit`, `e2e`, `smoke`, `uat`… |
+| `version` | `github.sha` | the version under test, the one the gate will ask about |
+| `tool` | | the tool that ran the tests, such as `pytest`: JUnit reports don't say it |
+| `commit`, `branch`, `tag`, `pull-request` | from the workflow run | where the version comes from |
+| `digest` | | the digest of the artifact that was built, such as a container image digest |
+
+The step fails when Kollaudo doesn't store the results, not when tests failed: failing on tests is
+the job of the test step. The output `test-run-url` links to the test run, and the summary of the
+workflow run says what was sent.
+
 ## Tokens
 
 Give the gate its own `read` token, with a name, so that Kollaudo's log of verdicts says which gate
@@ -51,6 +91,12 @@ kollaudo-server token create <project> --scope read --name github-gate
 ```
 
 Store it as a secret of the repository or of the environment, such as `KOLLAUDO_GATE_TOKEN`.
+
+For `push`, use an `ingest` token, limited to the components and environments the workflow tests:
+
+```bash
+kollaudo-server token create <project> --scope ingest --name github-ci --component frontend --environment staging
+```
 
 ## Failing closed, and when not to
 
@@ -76,18 +122,19 @@ editing the gate.
 
 ## How it works
 
-The action is a few lines of shell, and nothing else: it sets up Node.js 24, installs the Kollaudo
-CLI at the version of this release, and runs `kollaudo verdict`
+The actions are a few lines of shell, and nothing else: they set up Node.js 24, install the Kollaudo
+CLI at the version of this release, and run `kollaudo verdict` or `kollaudo push`
 ([ADR 0020](https://github.com/kollaudo/kollaudo/blob/main/docs/adr/0020-github-action.md)). Read
-[`action.yml`](action.yml) and [`gate.sh`](gate.sh) before you use it, and pin a commit SHA instead of
-`v0` to review every change.
+[`action.yml`](action.yml), [`gate.sh`](gate.sh), [`push/action.yml`](push/action.yml) and
+[`push/push.sh`](push/push.sh) before you use them, and pin a commit SHA instead of `v0` to review
+every change.
 
-- It sets up Node.js 24, which steps after it in the same job then use. If they need another
-  version, set it up again after the gate.
-- It downloads the CLI from npm, so the runner needs to reach the npm registry.
+- They set up Node.js 24, which the steps after them in the same job then use. If those need another
+  version, set it up again after the action.
+- They download the CLI from npm, so the runner needs to reach the npm registry.
 
-Each release of the action runs the CLI of the same release of Kollaudo. It is tested against that
-release, in [`test.yml`](.github/workflows/test.yml).
+Each release of the actions runs the CLI of the same release of Kollaudo, and is tested against it,
+in [`test.yml`](.github/workflows/test.yml).
 
 ## License
 

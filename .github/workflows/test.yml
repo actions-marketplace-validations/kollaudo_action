@@ -1,7 +1,7 @@
 name: Test
 
-# Runs the gate against Kollaudo itself (ADR 0020): its image, the release the action pins, next to
-# PostgreSQL. Each case asks for a verdict, and the last step checks what the gate did.
+# Runs the actions against Kollaudo itself (ADR 0020): its image, the release the actions pin, next to
+# PostgreSQL. push sends the results the gate then judges, and the last step checks what each did.
 on:
   pull_request:
   push:
@@ -31,9 +31,14 @@ jobs:
         with:
           node-version: 24
 
-      - name: Start Kollaudo, at the release the action runs
+      - name: Start Kollaudo, at the release the actions run
         run: |
           version=$(sed -n 's/^ *KOLLAUDO_CLI_VERSION: //p' action.yml)
+          push_version=$(sed -n 's/^ *KOLLAUDO_CLI_VERSION: //p' push/action.yml)
+          if [[ $version != "$push_version" ]]; then
+            echo "::error::The gate runs CLI $version, push runs $push_version: they must be the same release."
+            exit 1
+          fi
           docker run -d --name kollaudo --network host \
             -e DATABASE_URL=postgres://kollaudo:kollaudo@localhost:5432/kollaudo \
             "ghcr.io/kollaudo/kollaudo:$version"
@@ -44,20 +49,38 @@ jobs:
             echo "::add-mask::$token"
             echo "${scope^^}_TOKEN=$token" >>"$GITHUB_ENV"
           done
-          echo "CLI_VERSION=$version" >>"$GITHUB_ENV"
 
-      - name: Send a passed and a failed run of e2e tests in staging
+      - name: Write reports
         run: |
           report() {
             printf '{"results":{"tool":{"name":"playwright"},"summary":{"tests":1},"tests":[{"name":"home","status":"%s","duration":10}]}}' "$1"
           }
           report passed >passed.json
           report failed >failed.json
-          for run in "passed 1.0.0" "failed 2.0.0"; do
-            read -r status version <<<"$run"
-            KOLLAUDO_TOKEN=$INGEST_TOKEN npx --yes "@kollaudo/cli@$CLI_VERSION" push "$status.json" \
-              --component api --env staging --version "$version"
-          done
+          mkdir -p junit
+          printf '<testsuite name="unit"><testcase classname="cart" name="adds"/><testcase classname="cart" name="pays"/></testsuite>' >junit/cart.xml
+          printf '<testsuite name="unit"><testcase classname="search" name="finds"/></testsuite>' >junit/search.xml
+
+      - name: "push: a passed run of e2e tests in staging"
+        id: push-passed
+        uses: ./push
+        with: { url: "${{ env.KOLLAUDO_URL }}", token: "${{ env.INGEST_TOKEN }}", path: passed.json, component: api, environment: staging, version: 1.0.0 }
+
+      - name: "push: a failed run, which is still sent"
+        id: push-failed
+        uses: ./push
+        with: { url: "${{ env.KOLLAUDO_URL }}", token: "${{ env.INGEST_TOKEN }}", path: failed.json, component: api, environment: staging, version: 2.0.0 }
+
+      - name: "push: JUnit files by glob pattern, at build level"
+        id: push-junit
+        uses: ./push
+        with: { url: "${{ env.KOLLAUDO_URL }}", token: "${{ env.INGEST_TOKEN }}", path: "junit/*.xml", component: api, kind: unit, tool: vitest, version: 1.0.0 }
+
+      - name: "push: with a read token, refused"
+        id: push-refused
+        continue-on-error: true
+        uses: ./push
+        with: { url: "${{ env.KOLLAUDO_URL }}", token: "${{ env.READ_TOKEN }}", path: passed.json, component: api, environment: staging, version: 1.0.0 }
 
       - name: "pass: goes on"
         id: pass
@@ -104,9 +127,13 @@ jobs:
         uses: ./
         with: { url: "${{ env.KOLLAUDO_URL }}", token: "${{ env.READ_TOKEN }}", component: api, environment: staging, version: 3.0.0, allow: unknwon }
 
-      - name: Check what the gate did
+      - name: Check what the actions did
         env:
           RESULTS: >-
+            push-passed success -,
+            push-failed success -,
+            push-junit success -,
+            push-refused failure -,
             pass success pass,
             fail failure fail,
             unknown failure unknown,
@@ -122,12 +149,22 @@ jobs:
           for case in "${cases[@]}"; do
             read -r id want_step want_outcome <<<"$case"
             got_step=$(jq -r --arg id "$id" '.[$id].outcome' <<<"$STEPS")
-            # An output the step never set is empty: shown as "-".
+            # An output the step never set is empty: shown as "-". push has no outcome, but a link.
             got_outcome=$(jq -r --arg id "$id" '.[$id].outputs.outcome | if . == null or . == "" then "-" else . end' <<<"$STEPS")
             if [[ $got_step == "$want_step" && $got_outcome == "$want_outcome" ]]; then
               echo "✓ $id: $got_step, $got_outcome"
             else
               echo "✗ $id: $got_step, $got_outcome; expected $want_step, $want_outcome"
+              status=1
+            fi
+          done
+          # A push that stored its results gives the link to the test run in Kollaudo.
+          for id in push-passed push-failed push-junit; do
+            link=$(jq -r --arg id "$id" '.[$id].outputs["test-run-url"] // ""' <<<"$STEPS")
+            if [[ $link == "$KOLLAUDO_URL"/test-runs/* ]]; then
+              echo "✓ $id: $link"
+            else
+              echo "✗ $id: no link to the test run, got \"$link\""
               status=1
             fi
           done
