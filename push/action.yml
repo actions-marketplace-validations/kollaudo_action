@@ -1,0 +1,85 @@
+name: Kollaudo push
+description: Send test results to Kollaudo, as CTRF or JUnit XML reports, for a version of a component.
+author: Kollaudo
+branding:
+  icon: upload-cloud
+  color: purple
+
+inputs:
+  url:
+    description: The URL of your Kollaudo server.
+    required: true
+  token:
+    description: An ingest token of your Kollaudo project, best limited to the components and environments this workflow tests.
+    required: true
+  path:
+    description: Report files, CTRF (JSON) or JUnit XML, one per line. Glob patterns such as "test-results/**/*.xml" are expanded, and all the files make one test run.
+    required: true
+  component:
+    description: The component under test, such as "api".
+    required: true
+  environment:
+    description: Where the tests ran, such as "staging". Leave it empty for build-level tests, such as unit tests.
+    default: ""
+  kind:
+    description: The kind of test, such as unit, e2e, smoke or uat.
+    default: e2e
+  version:
+    description: The version under test, as the gate will ask about it.
+    default: ${{ github.sha }}
+  tool:
+    description: The tool that ran the tests, such as "pytest". JUnit reports don't say it.
+    default: ""
+  commit:
+    description: The commit of the version.
+    default: ${{ github.sha }}
+  branch:
+    description: The branch of the version.
+    default: ${{ github.head_ref || (github.ref_type == 'branch' && github.ref_name) || '' }}
+  tag:
+    description: The Git tag of the version.
+    default: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+  pull-request:
+    description: The pull request of the version.
+    default: ${{ github.event.pull_request.number }}
+  digest:
+    description: The digest of the artifact that was built, such as a container image digest.
+    default: ""
+
+outputs:
+  test-run-url:
+    description: The test run in Kollaudo.
+    value: ${{ steps.push.outputs.test-run-url }}
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v7
+      with:
+        node-version: 24
+    # A separate step, so that a failed download isn't mistaken for refused results.
+    - name: Install the Kollaudo CLI
+      shell: bash
+      run: npm install --global --no-audit --no-fund "@kollaudo/cli@$KOLLAUDO_CLI_VERSION"
+      env:
+        # The release of the CLI this release of the actions runs, the same as the gate's (ADR 0020).
+        KOLLAUDO_CLI_VERSION: 0.3.0
+    - name: Send the results to Kollaudo
+      id: push
+      shell: bash
+      run: '"$GITHUB_ACTION_PATH/push.sh"'
+      # Inputs go through the environment, never into the script, and the token never on a command line.
+      env:
+        KOLLAUDO_URL: ${{ inputs.url }}
+        KOLLAUDO_TOKEN: ${{ inputs.token }}
+        PUSH_PATH: ${{ inputs.path }}
+        PUSH_COMPONENT: ${{ inputs.component }}
+        PUSH_ENVIRONMENT: ${{ inputs.environment }}
+        PUSH_KIND: ${{ inputs.kind }}
+        PUSH_VERSION: ${{ inputs.version }}
+        PUSH_TOOL: ${{ inputs.tool }}
+        PUSH_COMMIT: ${{ inputs.commit }}
+        PUSH_BRANCH: ${{ inputs.branch }}
+        PUSH_TAG: ${{ inputs.tag }}
+        PUSH_PULL_REQUEST: ${{ inputs.pull-request }}
+        PUSH_DIGEST: ${{ inputs.digest }}
