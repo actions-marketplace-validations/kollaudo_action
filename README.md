@@ -25,8 +25,9 @@ jobs:
 | `unknown` | fails: evidence is missing, such as tests that never reported |
 | no verdict | fails: Kollaudo didn't answer, or the token or the inputs are wrong |
 
-The verdict, its reasons and the links to the test runs are in the log of the step and in the
-summary of the workflow run.
+The summary of the workflow run says why: the verdict in a sentence, then a table with one row for
+each kind of test, who sent it and a link to its test run. It also says when an override let the
+version through, when the environment runs another version, and when `allow` let the job go on.
 
 ## Inputs
 
@@ -40,7 +41,23 @@ summary of the workflow run.
 | `require` | | kinds of test that must have a run, such as `e2e,smoke`. They add to your policy, never relax it |
 | `allow` | | outcomes to let through besides `pass`: `unknown`, `no-verdict`, or both |
 
-The output `outcome` is `pass`, `fail`, `unknown` or `no-verdict`.
+| Output | |
+|---|---|
+| `outcome` | `pass`, `fail`, `unknown` or `no-verdict` |
+| `message` | the verdict in a sentence, such as `e2e failed.`, or why there is no verdict, such as `Can't reach Kollaudo at …` |
+
+Later steps can use them, for example to say why a job stopped:
+
+```yaml
+      - id: gate
+        uses: kollaudo/action@v0
+        continue-on-error: true
+        with: { url: "${{ vars.KOLLAUDO_URL }}", token: "${{ secrets.KOLLAUDO_GATE_TOKEN }}", component: api, environment: staging }
+      - if: steps.gate.outputs.outcome != 'pass'
+        env:
+          MESSAGE: ${{ steps.gate.outputs.message }} # through the environment, never into the script
+        run: echo "Stopped: $MESSAGE"
+```
 
 ## Send test results
 

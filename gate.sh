@@ -26,14 +26,66 @@ for value in ${wanted[@]+"${wanted[@]}"}; do
   esac
 done
 
-args=(verdict --component "$GATE_COMPONENT" --env "$GATE_ENVIRONMENT" --version "$GATE_VERSION")
+args=(verdict --component "$GATE_COMPONENT" --env "$GATE_ENVIRONMENT" --version "$GATE_VERSION" --json)
 [[ -n $GATE_REQUIRE ]] && args+=(--require "$GATE_REQUIRE")
 
-output=$(kollaudo "${args[@]}" 2>&1)
+# The answer is on stdout and the errors on stderr, so that an error is never read as an answer.
+errors=$(mktemp)
+answer=$(kollaudo "${args[@]}" 2>"$errors")
 code=$?
 outcome=$(outcome_of "$code")
-printf '%s\n' "$output"
+message=""
+if [[ $outcome != no-verdict ]]; then
+  # The exit code and the answer must agree. If they don't, or the answer isn't JSON, there is no verdict.
+  if jq -e --arg outcome "$outcome" '.outcome == $outcome and (.message | type == "string")' <<<"$answer" >/dev/null 2>&1; then
+    message=$(jq -r '.message' <<<"$answer")
+  else
+    outcome=no-verdict
+    message="Kollaudo's answer couldn't be read."
+  fi
+fi
+if [[ $outcome == no-verdict ]]; then
+  details=$(cat "$errors")
+  [[ -z $details ]] && details=$answer
+  [[ -z $message ]] && message=$details
+fi
+rm -f "$errors"
 echo "outcome=$outcome" >>"$GITHUB_OUTPUT"
+# A random delimiter, so that a message can't end the output early and set another one.
+delimiter="kollaudo_$(date +%s%N)_$RANDOM$RANDOM"
+{
+  echo "message<<$delimiter"
+  printf '%s\n' "$message"
+  echo "$delimiter"
+} >>"$GITHUB_OUTPUT"
+
+# The reasons as a table, with a link to each test run, and the notes the CLI prints under its report.
+table=""
+notes=""
+if [[ $outcome != no-verdict ]]; then
+  table=$(jq -r --arg url "${KOLLAUDO_URL%/}" '
+    def cell: tostring | gsub("\\|"; "\\|") | gsub("\r?\n"; " ");
+    if (.reasons | length) == 0 then empty else
+      "| | Kind | Result | Sent by | Test run |",
+      "|---|---|---|---|---|",
+      (.reasons[] |
+        "| \(.outcome | cell) | \(.kind | cell) | \(.message | cell) | \((.run.sentBy // "-") | cell) | " +
+        (if .run then "[\(.run.id[0:8])](\($url)/test-runs/\(.run.id))" else "-" end) + " |")
+    end' <<<"$answer")
+  notes=$(jq -r '
+    (if .override then "Let through by an override. The evidence alone is \(.evidenceOutcome)." else empty end),
+    (if .deployed and .deployed.version != .version
+      then "\(.environment) runs \(.component) \(.deployed.version) since \(.deployed.deployedAt), not \(.version)." else empty end),
+    (if .deployed.gate and (.deployed.gate.gated | not)
+      then "\(.component) \(.deployed.version) was deployed to \(.environment) at \(.deployed.deployedAt) without a pass in \(.deployed.gate.from) before it." else empty end)' <<<"$answer")
+fi
+if [[ $outcome == no-verdict ]]; then
+  printf '%s\n' "$message"
+else
+  echo "$outcome: $GATE_COMPONENT $GATE_VERSION in $GATE_ENVIRONMENT: $message"
+  [[ -n $table ]] && printf '%s\n' "$table"
+  [[ -n $notes ]] && printf '\n%s\n' "$notes"
+fi
 
 let_through=false
 for value in ${allowed[@]+"${allowed[@]}"}; do [[ $value == "$outcome" ]] && let_through=true; done
@@ -47,11 +99,15 @@ esac
 {
   echo "### $title"
   echo
-  echo "\`$GATE_COMPONENT\` \`$GATE_VERSION\` in \`$GATE_ENVIRONMENT\`"
-  echo
-  echo '```text'
-  printf '%s\n' "$output"
-  echo '```'
+  echo "\`$GATE_COMPONENT\` \`$GATE_VERSION\` in \`$GATE_ENVIRONMENT\`: $message"
+  if [[ -n $table ]]; then
+    echo
+    printf '%s\n' "$table"
+  fi
+  if [[ -n $notes ]]; then
+    echo
+    printf '%s\n' "$notes"
+  fi
   if $let_through; then
     echo
     echo "Let through by \`allow: $GATE_ALLOW\`."
