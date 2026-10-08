@@ -168,4 +168,19 @@ jobs:
               status=1
             fi
           done
+          # The output message says why, and the summary of a verdict has a table of its reasons.
+          check_message() {
+            local id=$1 want=$2 got
+            got=$(jq -r --arg id "$id" '.[$id].outputs.message // ""' <<<"$STEPS")
+            if [[ $got == *"$want"* ]]; then
+              echo "✓ $id message: $got"
+            else
+              echo "✗ $id message: \"$got\"; expected it to contain \"$want\""
+              status=1
+            fi
+          }
+          check_message pass "e2e passed."
+          check_message fail "e2e failed."
+          check_message unknown "No test run of this version"
+          check_message down "Can't reach Kollaudo"
           exit "$status"
