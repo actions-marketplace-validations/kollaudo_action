@@ -51,7 +51,7 @@ runs:
       run: npm install --global --no-audit --no-fund "@kollaudo/cli@$KOLLAUDO_CLI_VERSION"
       env:
         # The release of the CLI this release of the action runs (ADR 0020).
-        KOLLAUDO_CLI_VERSION: 0.4.0
+        KOLLAUDO_CLI_VERSION: 0.5.0
     - name: Ask Kollaudo for the verdict
       id: gate
       shell: bash
