@@ -153,6 +153,24 @@ every change.
 Each release of the actions runs the CLI of the same release of Kollaudo, and is tested against it,
 in [`test.yml`](.github/workflows/test.yml).
 
+## Releasing
+
+For maintainers. A new release of the actions follows a new release of `@kollaudo/cli`:
+
+1. [`update-cli.yml`](.github/workflows/update-cli.yml) checks npm every day. When the latest version
+   of `@kollaudo/cli` is newer than `KOLLAUDO_CLI_VERSION`, it opens the pull request
+   `chore: release X.Y.Z`, which changes that version in `action.yml` and `push/action.yml`. The CLI
+   is staged until a maintainer approves it, so the pull request comes after the approval.
+2. [`test.yml`](.github/workflows/test.yml) runs on the pull request against the image of that
+   release. Merge it when it is green.
+3. [`release.yml`](.github/workflows/release.yml) tags the merge commit `vX.Y.Z`, moves the major
+   tag (`v0`) and creates the release on GitHub, with a short note that links the CLI release. Edit
+   the note if the release needs more, and publish it on the Marketplace by hand from its page.
+
+`update-cli.yml` needs a secret `RELEASE_TOKEN`: a fine-grained personal access token (or the token
+of a GitHub App) for this repository only, with read and write on *Contents* and *Pull requests*. A
+pull request opened with the default `GITHUB_TOKEN` doesn't start `test.yml`.
+
 ## License
 
 [Apache-2.0](LICENSE)
