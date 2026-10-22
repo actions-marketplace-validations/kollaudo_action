@@ -1,0 +1,61 @@
+name: Update CLI
+
+# Opens a pull request when a new release of @kollaudo/cli is on npm. The CLI is staged until a
+# maintainer approves it, so a version that npm shows as latest is one people can install. test.yml
+# runs on the pull request against the image of that release and merging it starts release.yml.
+on:
+  schedule:
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: update-cli
+
+jobs:
+  pull-request:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # A pull request opened with GITHUB_TOKEN doesn't start test.yml: this token does.
+          token: ${{ secrets.RELEASE_TOKEN }}
+
+      - name: Look for a new release of the CLI
+        id: version
+        run: |
+          latest=$(npm view @kollaudo/cli dist-tags.latest)
+          current=$(sed -n 's/^ *KOLLAUDO_CLI_VERSION: //p' action.yml)
+          echo "latest=$latest" >>"$GITHUB_OUTPUT"
+          if [[ ! $latest =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::npm gives \"$latest\" as the latest version of @kollaudo/cli."
+            exit 1
+          fi
+          # Only a newer version: if the CLI is rolled back on npm, the actions stay where they are.
+          if [[ $latest != "$current" && $(printf '%s\n%s\n' "$current" "$latest" | sort -V | tail -1) == "$latest" ]]; then
+            echo "new=true" >>"$GITHUB_OUTPUT"
+            echo "The CLI is at $latest and the actions run $current."
+          else
+            echo "The actions run $current, which is the latest or newer than npm: nothing to do."
+          fi
+
+      - name: Open the pull request
+        if: steps.version.outputs.new == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          VERSION: ${{ steps.version.outputs.latest }}
+        run: |
+          branch="chore/release-$VERSION"
+          if gh pr list --head "$branch" --state open --json number --jq 'length > 0' | grep -q true; then
+            echo "The pull request for $VERSION is already open."
+            exit 0
+          fi
+          sed -i "s/^\( *KOLLAUDO_CLI_VERSION: \).*/\1$VERSION/" action.yml push/action.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -C "$branch"
+          git commit -am "chore: release $VERSION"
+          git push --force origin "$branch"
+          gh pr create --base main --head "$branch" --title "chore: release $VERSION" --body "Runs [Kollaudo CLI $VERSION](https://github.com/kollaudo/kollaudo/releases/tag/v$VERSION) in the gate and in \`push\`. \`test.yml\` tries both against the image of that release. Merging this pull request tags \`v$VERSION\`, moves the major tag and creates the release."

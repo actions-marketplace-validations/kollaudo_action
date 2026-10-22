@@ -1,0 +1,51 @@
+name: Release
+
+# Runs when a pull request that changes the CLI version is merged (see update-cli.yml): it tags the
+# merge commit with the version, moves the major tag (v0) and creates the release on GitHub. The
+# release on the Marketplace is published by hand from the page of the release.
+on:
+  push:
+    branches: [main]
+    paths:
+      - action.yml
+      - push/action.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Tag, move the major tag and create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(sed -n 's/^ *KOLLAUDO_CLI_VERSION: //p' action.yml)
+          push_version=$(sed -n 's/^ *KOLLAUDO_CLI_VERSION: //p' push/action.yml)
+          if [[ $version != "$push_version" ]]; then
+            echo "::error::The gate runs CLI $version, push runs $push_version: they must be the same release."
+            exit 1
+          fi
+          if [[ ! $version =~ ^([0-9]+)\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::\"$version\" is not a version of the form X.Y.Z."
+            exit 1
+          fi
+          major="v${BASH_REMATCH[1]}"
+          if git ls-remote --exit-code --tags origin "refs/tags/v$version" >/dev/null; then
+            echo "v$version exists: nothing to release."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag "v$version"
+          git tag -f "$major"
+          git push origin "v$version"
+          git push --force origin "$major"
+          gh release create "v$version" --verify-tag --title "Kollaudo gate $version" --notes "Runs [Kollaudo CLI $version](https://github.com/kollaudo/kollaudo/releases/tag/v$version)."
